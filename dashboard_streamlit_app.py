@@ -141,7 +141,7 @@ with st.sidebar:
 # COS PRINCIPAL
 # ==============================================================================
 
-st.title("🚡 Barcelona: Dashboard de Mobilitat i Sostenibilitat")
+st.title("SMARTMOVE: Mobilitat i Sostenibilitat per Barris a Barcelona")
 # (Hem eliminat els KPIs d'aquí sota per netejar la vista)
 
 st.divider()
