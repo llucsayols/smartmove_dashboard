@@ -5,10 +5,10 @@ import plotly.express as px
 import os
 
 # --- CONFIGURACIÓ DE PÀGINA ---
-st.set_page_config(layout="wide", page_title="BCN Mobilitat & Sostenibilitat")
+st.set_page_config(layout="wide", page_title="BCN Mobilitat: Residents vs Turistes")
 
 # ==============================================================================
-# 1. NOMS DE ZONES
+# 1. DEFINICIONS I ESTILS
 # ==============================================================================
 NOMS_ZONES = {
     0: "Residencial / Zona alta",
@@ -18,31 +18,17 @@ NOMS_ZONES = {
     4: "Zones d'Alta Saturació / Turisme",
 }
 
-# ==============================================================================
-# 2. GLOSSARI (Explicacions Barra Lateral)
-# ==============================================================================
-EXPLICACIONS = {
-    "Centre Neuràlgic": "Cor de la ciutat (Eixample). Màxim volum de viatges i connectivitat (PageRank).",
-    "Perifèria / Zona Tranquila": "Zones allunyades (Torre Baró, Vallbona). Volum molt baix però distàncies de viatge molt llargues.",
-    "Zones d'Alta Saturació / Turisme": "Zones que reben una quantitat massiva de gent en proporció a la seva mida (Casc Antic, Barceloneta). Tenen la pressió més alta.",
-    "Vida de Barri": "Barris densos amb molta activitat interna (Gràcia, Sants). Distàncies de viatge molt curtes (proximitat).",
-    "Residencial / Zona alta": "Barris tranquils i ben connectats (Sarrià). Sense saturació turística."
-}
-
-# ==============================================================================
-# 3. COLORS D'ALT CONTRAST
-# ==============================================================================
 COLOR_MAP = {
-    "Centre Neuràlgic": "#E63946",                  # VERMELL
-    "Perifèria / Zona Tranquila": "#2A9D8F",        # VERD
-    "Vida de Barri": "#F4A261",                     # TARONJA
-    "Residencial / Zona alta": "#457B9D",           # BLAU
-    "Zones d'Alta Saturació / Turisme": "#9B5DE5",  # LILA
+    "Centre Neuràlgic": "#E63946",         
+    "Perifèria / Zona Tranquila": "#2A9D8F",
+    "Vida de Barri": "#F4A261",            
+    "Residencial / Zona alta": "#457B9D",  
+    "Zones d'Alta Saturació / Turisme": "#9B5DE5",
     "General": "#CCCCCC",
     "Altres": "#CCCCCC"
 }
 
-# --- FITXERS ---
+# --- RUTES DELS FITXERS ---
 FILE_CSV = "dades_dashboard_completes.csv"
 FILE_GEO = "barris.geojson"
 
@@ -50,56 +36,54 @@ FILE_GEO = "barris.geojson"
 @st.cache_data
 def load_data():
     if not os.path.exists(FILE_CSV) or not os.path.exists(FILE_GEO):
-        return None, f"❌ FALTEN FITXERS: Assegura't de tenir '{FILE_CSV}' i '{FILE_GEO}'."
+        return None, f"❌ Error: Falten els fitxers de dades ({FILE_CSV} o {FILE_GEO})."
 
     try:
-        # 1. Carregar CSV
+        # 1. Carregar Dades
         df = pd.read_csv(FILE_CSV)
-        col_nom = df.columns[0]
-        df = df.rename(columns={col_nom: 'Nom_Barri'})
-        df['id_match'] = df['Nom_Barri'].astype(str).str.strip().str.lower()
+        
+        # Normalitzar noms
+        df.columns = df.columns.str.strip()
+        # Assegurem que tenim la columna clau 'Nom_Barri'
+        if 'Nom_Barri' not in df.columns:
+             # Si per algun motiu la primera es diu diferent, la renomem
+             df = df.rename(columns={df.columns[0]: 'Nom_Barri'})
 
-        # NETEJA DE SEGURETAT
-        cols_numeriques = ['in_total_viajes', 'num_paradas_tmb', 'presion_tmb', 'avg_distance_in', 'pagerank', 'entropy_in']
-        for col in cols_numeriques:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        df['id_match'] = df['Nom_Barri'].astype(str).str.strip().str.lower()
 
         # 2. Carregar Mapa
         gdf = gpd.read_file(FILE_GEO)
         geo_col = next((c for c in ['n_barri', 'NOM', 'barrio', 'Name'] if c in gdf.columns), None)
-        if not geo_col: return None, "Error: No columna noms GeoJSON"
+        if not geo_col: return None, "Error: El GeoJSON no té columna de noms."
         gdf['id_match'] = gdf[geo_col].astype(str).str.strip().str.lower()
 
-        # 3. Merge i Reprojecció
+        # 3. Merge
         merged = gdf.merge(df, on='id_match', how='left')
-        if merged.crs and merged.crs.to_string() != "EPSG:4326":
-            merged = merged.to_crs(epsg=4326)
         
-        merged['presion_tmb'] = merged['presion_tmb'].fillna(0)
-        
-        # 4. Assignar Noms
+        # Neteja de nuls
+        cols_num = ['res_viajes', 'tur_viajes', 'in_total_viajes', 'num_paradas_tmb', 'presion_tmb']
+        for c in cols_num:
+            if c in merged.columns:
+                merged[c] = pd.to_numeric(merged[c], errors='coerce').fillna(0)
+
+        # 4. Assignar Zones
         if 'cluster_kmeans' in merged.columns:
             merged['cluster_kmeans'] = pd.to_numeric(merged['cluster_kmeans'], errors='coerce').fillna(-1).astype(int)
             merged['Nom_Zona'] = merged['cluster_kmeans'].map(NOMS_ZONES).fillna("Altres")
-            merged = merged.sort_values('cluster_kmeans')
         else:
             merged['Nom_Zona'] = "General"
 
-        # 5. Centre Mapa
-        if not merged.geometry.is_empty.all():
-            centroid = merged.geometry.centroid
-            center_lat = centroid.y.mean()
-            center_lon = centroid.x.mean()
-        else:
-            center_lat, center_lon = 41.39, 2.17
-
-        return merged, (center_lat, center_lon)
+        # Coordenades
+        if merged.crs and merged.crs.to_string() != "EPSG:4326":
+             merged = merged.to_crs(epsg=4326)
+             
+        centroid = merged.geometry.centroid
+        return merged, (centroid.y.mean(), centroid.x.mean())
 
     except Exception as e:
-        return None, f"Error: {e}"
+        return None, f"Error de càrrega: {e}"
 
-# --- INICI APP ---
+# --- INICI ---
 data_loaded = load_data()
 if not data_loaded: st.stop()
 gdf, map_center = data_loaded
@@ -109,144 +93,170 @@ if isinstance(gdf, str):
     st.stop()
 
 # ==============================================================================
-# 🎯 BARRA LATERAL (ESTIL MILLORAT)
+# SIDEBAR
 # ==============================================================================
 with st.sidebar:
-    st.title("ℹ️ Llegenda de Zones")
-    st.markdown("Categories identificades segons patrons de mobilitat (IA).")
-    
+    st.header("Paràmetres")
     st.markdown("---")
-    
-    for zona, descripcio in EXPLICACIONS.items():
-        color = COLOR_MAP.get(zona, "#333")
-        st.markdown(
-            f"""
-            <div style="margin-bottom: 20px;">
-                <div style="display: flex; align-items: center; margin-bottom: 5px;">
-                    <span style="display: inline-block; width: 15px; height: 15px; background-color: {color}; border-radius: 50%; margin-right: 10px;"></span>
-                    <strong style="font-size: 16px; color: #FFFFFF;">{zona}</strong>
-                </div>
-                <div style="font-size: 14px; color: #F0F0F0; margin-left: 25px; line-height: 1.4;">
-                    {descripcio}
-                </div>
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
-    
-    st.markdown("---")
-    st.caption("UPF - SmartMove")
+    st.markdown("**Llegenda de Zones:**")
+    for z, color in COLOR_MAP.items():
+        if z not in ["General", "Altres"]:
+            st.markdown(f"<span style='color:{color}'>■</span> {z}", unsafe_allow_html=True)
 
 # ==============================================================================
-# COS PRINCIPAL
+# MAIN
 # ==============================================================================
+st.title("SmartMove: Sotenibilitat i Mobilitat Urbana")
+st.markdown("Anàlisi de fluxos de **Residents vs Turistes** i la pressió sobre el transport.")
+st.divider() 
 
-st.title("SMARTMOVE: Mobilitat i Sostenibilitat per Barris a Barcelona")
-# (Hem eliminat els KPIs d'aquí sota per netejar la vista)
+tab1, tab2, tab3 = st.tabs(["🗺️ Mapa General", "⚖️ Oferta vs Demanda", "🏆 Rànquing de Volum"])
 
-st.divider()
-
-# --- PESTANYES ---
-tab_map, tab_scatter, tab_ranking = st.tabs(["🗺️ Mapa de Zones", "⚖️ Eficiència", "📊 Rànquing i Identificació"])
-
-# TAB 1: MAPA
-with tab_map:
-    col_sel, col_viz = st.columns([1, 4])
-    with col_sel:
-        metric = st.selectbox("Pintar per:", ["Nom_Zona", "presion_tmb", "in_total_viajes"], index=0)
+# --- TAB 1: MAPA ---
+with tab1:
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        tema = st.radio("Visualitzar:", ["Zona (Cluster)", "Volum Total", "Pressió Transport"])
         
-        with st.expander("ℹ️ Llegenda de variables", expanded=True):
-            st.markdown("""
-            * **🏃 in_total_viajes (Demanda):**
-              Volum total de persones que arriben al barri.
+        # Explicació contextual
+        if tema == "Pressió Transport":
+            st.info("""
+            **🔥 Què és la Pressió (presion_tmb)?**
             
-            * **🔥 presion_tmb (Saturació):** `Viatges / Parades`. 
-              Indica si la infraestructura està sobrecarregada (Vermell = Saturat).
+            És una ràtio que mesura la intensitat d'ús de la infraestructura:
+            
+            $$
+            \\text{Pressió} = \\frac{\\text{Volum Total de Viatges}}{\\text{Nombre de Parades/Estacions}}
+            $$
+            
+            * **Valors alts (Vermell):** Indiquen un possible risc de saturació, on molta gent depèn de poques parades.
+            * **Valors baixos (Blau):** Indiquen una bona cobertura de transport respecte a la demanda.
             """)
-    
-    with col_viz:
+        elif tema == "Volum Total":
+            st.info("Suma total de viatges (Residents + Turistes) que tenen aquest barri com a destinació.")
+        
+        if tema == "Zona (Cluster)":
+            col = "Nom_Zona"
+            cm = COLOR_MAP
+            is_cat = True
+        elif tema == "Volum Total":
+            col = "in_total_viajes"
+            cm = "Viridis"
+            is_cat = False
+        else:
+            col = "presion_tmb"
+            cm = "RdYlBu_r"
+            is_cat = False
+            
+    with col2:
         gdf_map = gdf.set_index('Nom_Barri')
         
-        color_kw = {}
-        if metric == "Nom_Zona":
-            color_kw = {"color_discrete_map": COLOR_MAP}
-        elif metric == "presion_tmb":
-             color_kw = {"color_continuous_scale": "RdYlBu_r"}
+        args = {
+            "geojson": gdf_map.geometry,
+            "locations": gdf_map.index,
+            "color": col,
+            "hover_name": gdf_map.index,
+            "hover_data": ["res_viajes", "tur_viajes", "num_paradas_tmb"],
+            "mapbox_style": "carto-positron",
+            "center": {"lat": map_center[0], "lon": map_center[1]},
+            "zoom": 11.5,
+            "opacity": 0.7,
+            "height": 600
+        }
         
-        fig_map = px.choropleth_mapbox(
-            gdf_map, geojson=gdf_map.geometry, locations=gdf_map.index,
-            color=metric, hover_name=gdf_map.index,
-            hover_data=['in_total_viajes', 'presion_tmb', 'Nom_Zona'],
-            mapbox_style="carto-positron",
-            center={"lat": map_center[0], "lon": map_center[1]}, zoom=11.5, opacity=0.6,
-            title=f"Mapa: {metric}",
-            **color_kw
-        )
-        fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=600)
-        st.plotly_chart(fig_map, use_container_width=True)
+        if is_cat:
+            fig = px.choropleth_mapbox(gdf_map, color_discrete_map=cm, **args)
+        else:
+            fig = px.choropleth_mapbox(gdf_map, color_continuous_scale=cm, **args)
+            
+        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+        st.plotly_chart(fig, use_container_width=True)
 
-# TAB 2: SCATTER
-with tab_scatter:
-    st.subheader("Anàlisi d'Eficiència (Inversió vs Ús)")
-    fig_sc = px.scatter(
-        gdf, x="num_paradas_tmb", y="in_total_viajes",
-        color="Nom_Zona", 
-        color_discrete_map=COLOR_MAP,
-        hover_name="Nom_Barri",
-        trendline="ols", 
-        trendline_scope="overall",       
-        trendline_color_override="gray", 
-        height=600,
-        labels={"num_paradas_tmb": "Oferta (Parades)", "in_total_viajes": "Demanda (Viatges)"}
-    )
-    fig_sc.update_traces(marker=dict(size=12, opacity=0.8, line=dict(width=1, color='DarkSlateGrey')))
-    st.plotly_chart(fig_sc, use_container_width=True)
-
-# TAB 3: RÀNQUING
-with tab_ranking:
-    st.subheader("🏆 Top Barris per Volum (Rànquing)")
-    top_n = st.slider("Nombre de barris a mostrar:", 5, 50, 20)
-    df_top = gdf.sort_values('in_total_viajes', ascending=True).tail(top_n)
+# --- TAB 2: SCATTER (Supply vs Demand) ---
+with tab2:
+    st.subheader("Eficiència: Infraestructura vs Ús Real")
     
-    fig_bar = px.bar(
-        df_top,
-        x="in_total_viajes",
-        y="Nom_Barri",
+    # Etiquetes intel·ligents (Top 10%)
+    limit_x = gdf['num_paradas_tmb'].quantile(0.90)
+    limit_y = gdf['in_total_viajes'].quantile(0.90)
+    
+    gdf['label'] = gdf.apply(lambda x: x['Nom_Barri'] if (x['in_total_viajes'] > limit_y or x['num_paradas_tmb'] > limit_x) else "", axis=1)
+    
+    fig_sc = px.scatter(
+        gdf,
+        x="num_paradas_tmb",
+        y="in_total_viajes",
         color="Nom_Zona",
+        size="tur_viajes", # La mida del punt indica el pes del turisme
         color_discrete_map=COLOR_MAP,
+        text="label",
+        hover_name="Nom_Barri",
+        hover_data=["res_viajes", "tur_viajes"],
+        trendline="ols",
+        trendline_scope="overall",
+        trendline_color_override="gray",
+        height=600,
+        labels={
+            "num_paradas_tmb": "Oferta (Parades)",
+            "in_total_viajes": "Demanda Total (Viatges)",
+            "tur_viajes": "Volum Turístic"
+        }
+    )
+    fig_sc.update_traces(textposition='top center', marker=dict(opacity=0.8, line=dict(width=1, color='DarkSlateGrey')))
+    st.plotly_chart(fig_sc, use_container_width=True)
+    st.caption("* La mida del cercle representa el volum de turistes.")
+
+# --- TAB 3: RÀNQUING (MODIFICAT PER VOLUM) ---
+with tab3:
+    st.subheader("📊 Top Barris per Volum de Viatges")
+    
+    # Selector
+    top_n = st.slider("Nombre de barris:", 5, 30, 15)
+    
+    # 1. Ordenem per VOLUM TOTAL
+    df_rank = gdf.sort_values('in_total_viajes', ascending=True).tail(top_n) # tail perquè en horitzontal el gran queda a dalt si fem ascending
+    
+    # 2. Gràfic de Barres Apilades (Stacked) per veure la composició
+    # Per fer-ho fàcil amb plotly express, cal fer un 'melt' (transformar a format llarg)
+    df_long = df_rank.melt(
+        id_vars=['Nom_Barri'], 
+        value_vars=['res_viajes', 'tur_viajes'],
+        var_name='Tipus_Usuari', 
+        value_name='Viatges'
+    )
+    
+    # Canviem noms per a la llegenda
+    df_long['Tipus_Usuari'] = df_long['Tipus_Usuari'].replace({
+        'res_viajes': 'Residents 🏠', 
+        'tur_viajes': 'Turistes 📷'
+    })
+
+    fig_bar = px.bar(
+        df_long,
+        x="Viatges",
+        y="Nom_Barri",
+        color="Tipus_Usuari",
         orientation='h',
         height=600,
-        text="in_total_viajes",
-        title=f"Top {top_n} Barris amb més viatges"
+        title=f"Top {top_n} Barris amb més moviment (Desglossat)",
+        color_discrete_map={'Residents 🏠': '#457B9D', 'Turistes 📷': '#E63946'},
+        text_auto='.2s' # Format compacte (k, M)
     )
-    fig_bar.update_traces(texttemplate='%{text:.2s}', textposition='outside')
+    
+    # Ordenar eix Y pel total (suma de residents + turistes)
+    # Com que df_rank ja estava ordenat per 'in_total_viajes', utilitzem el seu ordre
+    fig_bar.update_layout(yaxis={'categoryorder': 'array', 'categoryarray': df_rank['Nom_Barri']})
+    
     st.plotly_chart(fig_bar, use_container_width=True)
     
-    st.divider()
-
-    st.subheader("🕵️ Identificació Tècnica (Semàfor)")
+    # Taula de dades
+    st.markdown("#### Dades detallades")
+    cols_show = ['Nom_Barri', 'Nom_Zona', 'in_total_viajes', 'res_viajes', 'tur_viajes', 'presion_tmb']
     
-    # Explicació tècnica de les columnes
-    st.info("""
-    **Diccionari de variables tècniques:**
-    * **in_total_viajes:** Demanda total (persones que arriben).
-    * **avg_distance_in:** Distància mitjana recorreguda pels usuaris (km).
-    * **pagerank:** Importància a la xarxa (Nusos de comunicació).
-    * **presion_tmb:** Ràtio de saturació (Viatges per parada).
-    """)
-
-    if 'cluster_kmeans' in gdf.columns:
-        cols_analisi = ['in_total_viajes', 'avg_distance_in', 'pagerank', 'presion_tmb']
-        cols_existents = [c for c in cols_analisi if c in gdf.columns]
-        
-        perfil = gdf.groupby('cluster_kmeans')[cols_existents].mean()
-        perfil = perfil[perfil.index.isin(NOMS_ZONES.keys())]
-        perfil['Nom Actual'] = perfil.index.map(NOMS_ZONES)
-        
-        format_dict = {col: "{:.2f}" for col in cols_existents}
-        
-        st.dataframe(
-            perfil.style.background_gradient(cmap='YlOrRd', subset=cols_existents)
-                  .format(format_dict),
-            use_container_width=True
-        )
+    # Mostrem els de dalt de tot, ordenats de major a menor
+    df_table = gdf.sort_values('in_total_viajes', ascending=False).head(top_n)[cols_show]
+    
+    st.dataframe(
+        df_table.style.background_gradient(subset=['in_total_viajes'], cmap='Greens'),
+        use_container_width=True
+    )
